@@ -2,7 +2,7 @@
 
 # ----------------------
 # KUDU Deployment Script
-# Version: 0.1.11
+# Version: 1.0.15
 # ----------------------
 
 # Helpers
@@ -23,40 +23,13 @@ exitWithMessageOnError () {
 hash node 2>/dev/null
 exitWithMessageOnError "Missing node.js executable, please install node.js, if already installed make sure it can be reached from current environment."
 
-# Verify that we have access to tar
-hash tar 2> /dev/null
-exitWithMessageOnError "Missing tar. I figured as much."
-
 # Setup
 # -----
-echo Copy assets to $DEPLOYMENT_TEMP for build
-tar cf - --exclude=node_modules --exclude=bower_components --exclude=dist --exclude=tmp --exclude=.git . | (cd $DEPLOYMENT_TEMP && tar xvf - )
-exitWithMessageOnError "Failed to create and extract tarball"
-
-echo Switch to the temp directory
-cd $DEPLOYMENT_TEMP
-
-if [[ -d node_modules ]]; then
-  echo Removing node_modules folder
-  rm -Rf node_modules
-  exitWithMessageOnError "node_modules removal failed"
-fi
 
 SCRIPT_DIR="${BASH_SOURCE[0]%\\*}"
 SCRIPT_DIR="${SCRIPT_DIR%/*}"
 ARTIFACTS=$SCRIPT_DIR/../artifacts
 KUDU_SYNC_CMD=${KUDU_SYNC_CMD//\"}
-NODE_EXE="$PROGRAMFILES\\nodejs\\0.12.6\\node.exe"
-NPM_CMD="\"$NODE_EXE\" \"$PROGRAMFILES\\npm\\3.3.9\\node_modules\\npm\\bin\\npm-cli.js\""
-NODE_MODULES_DIR="$APPDATA\\npm\\node_modules"
-
-EMBER_PATH="$NODE_MODULES_DIR\\ember-cli\\bin\\ember"
-BOWER_PATH="$NODE_MODULES_DIR\\bower\\bin\\bower"
-AZUREDEPLOY_PATH="$NODE_MODULES_DIR\\ember-cli-azure-deploy\\bin\\azure-deploy"
-
-EMBER_CMD="\"$NODE_EXE\" \"$EMBER_PATH\""
-BOWER_CMD="\"$NODE_EXE\" \"$BOWER_PATH\""
-AZUREDEPLOY_CMD="\"$NODE_EXE\" \"$AZUREDEPLOY_PATH\""
 
 if [[ ! -n "$DEPLOYMENT_SOURCE" ]]; then
   DEPLOYMENT_SOURCE=$SCRIPT_DIR
@@ -91,83 +64,60 @@ if [[ ! -n "$KUDU_SYNC_CMD" ]]; then
   fi
 fi
 
-##################################################################################################################################
-# Installing dependencies to take load of ember-cli install
-# -----
+# Node Helpers
+# ------------
 
-echo Installing ember-cli
-eval $NPM_CMD install --no-optional --no-bin-links ember-cli
-exitWithMessageOnError "ember-cli failed"
+selectNodeVersion () {
+  if [[ -n "$KUDU_SELECT_NODE_VERSION_CMD" ]]; then
+    SELECT_NODE_VERSION="$KUDU_SELECT_NODE_VERSION_CMD \"$DEPLOYMENT_SOURCE/dist\" \"$DEPLOYMENT_TARGET\" \"$DEPLOYMENT_TEMP\""
+    eval $SELECT_NODE_VERSION
+    exitWithMessageOnError "select node version failed"
 
-echo Installing ember-cli-azure-deploy
-eval $NPM_CMD install -g ember-cli-azure-deploy
-exitWithMessageOnError "ember-cli-azure-deploy failed"
+    if [[ -e "$DEPLOYMENT_TEMP/__nodeVersion.tmp" ]]; then
+      NODE_EXE=`cat "$DEPLOYMENT_TEMP/__nodeVersion.tmp"`
+      exitWithMessageOnError "getting node version failed"
+    fi
 
-if [[ ! -e "$BOWER_PATH" ]]; then
-  echo Installing bower
-  eval $NPM_CMD install --global --no-optional --no-bin-links bower
-  exitWithMessageOnError "bower failed"
-else
-  echo bower already installed, nothing to do
-fi
+    if [[ -e "$DEPLOYMENT_TEMP/__npmVersion.tmp" ]]; then
+      NPM_JS_PATH=`cat "$DEPLOYMENT_TEMP/__npmVersion.tmp"`
+      exitWithMessageOnError "getting npm version failed"
+    fi
 
-##################################################################################################################################
-# Print Versions
-# -----
+    if [[ ! -n "$NODE_EXE" ]]; then
+      NODE_EXE=node
+    fi
 
-echo -n "Using Node "
-eval \"$NODE_EXE\" -v
-
-echo -n "Using npm "
-eval $NPM_CMD -v
-
-echo -n "Using bower "
-eval $BOWER_CMD -v
-
-echo -n "Using ember-cli-azure-deploy "
-eval $AZUREDEPLOY_CMD -v
-
-##################################################################################################################################
-# Build
-# -----
-
-echo Cleaning Cache
-eval $NPM_CMD cache clean
-exitWithMessageOnError "npm cache cleaning failed"
-
-echo Installing npm modules
-eval $NPM_CMD install --no-optional --no-bin-links
-exitWithMessageOnError "npm install failed"
-
-echo Installing bower dependencies
-eval $BOWER_CMD install
-exitWithMessageOnError "bower install failed"
-
-echo Build the dist folder
-eval $AZUREDEPLOY_CMD build
-exitWithMessageOnError "ember-cli-azure-deploy build failed"
-
-echo Copy web.config to the dist folder
-cp web.config dist\
+    NPM_CMD="\"$NODE_EXE\" \"$NPM_JS_PATH\""
+  else
+    NPM_CMD=npm
+    NODE_EXE=node
+  fi
+}
 
 ##################################################################################################################################
 # Deployment
 # ----------
 
+echo Handling Ember App deployment.
+
+# 1. Install npm packages
+if [ -e "$DEPLOYMENT_SOURCE/package.json" ]; then
+  cd "$DEPLOYMENT_SOURCE"
+  echo "Running npm install"
+  eval npm install
+  exitWithMessageOnError "npm failed"
+  echo "Building Ember app"
+  eval npm run build
+  exitWithMessageOnError "Ember build failed"
+ cd - > /dev/null
+fi
+
+# 2. KuduSync
 if [[ "$IN_PLACE_DEPLOYMENT" -ne "1" ]]; then
-  "$KUDU_SYNC_CMD" -v 50 -f "$DEPLOYMENT_TEMP/dist" -t "$DEPLOYMENT_TARGET" -n "$NEXT_MANIFEST_PATH" -p "$PREVIOUS_MANIFEST_PATH" -i ".git;.hg;.deployment;deploy.sh"
+  "$KUDU_SYNC_CMD" -v 50 -f "$DEPLOYMENT_SOURCE/build" -t "$DEPLOYMENT_TARGET" -n "$NEXT_MANIFEST_PATH" -p "$PREVIOUS_MANIFEST_PATH" -i ".git;.hg;.deployment;deploy.sh"
   exitWithMessageOnError "Kudu Sync failed"
 fi
 
+
 ##################################################################################################################################
-# Post deployment stub
-# --------------------
-
-if [[ -n "$POST_DEPLOYMENT_ACTION" ]]; then
-  POST_DEPLOYMENT_ACTION=${POST_DEPLOYMENT_ACTION//\"}
-  cd "${POST_DEPLOYMENT_ACTION_DIR%\\*}"
-  "$POST_DEPLOYMENT_ACTION"
-  exitWithMessageOnError "post deployment action failed"
-fi
-
 echo "Finished successfully."
